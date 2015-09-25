@@ -1,0 +1,13 @@
+[Unit]
+Description=Apache Solr
+After=syslog.target network.target remote-fs.target nss-lookup.target
+
+[Service]
+Type=simple
+ExecStart=/etc/solr-5.3.0/bin/solr restart -p 8983
+ExecStop=/etc/solr-5.3.0/bin/solr stop -p 8983
+RemainAfterExit=yes
+TimeoutStartSec=1min
+
+[Install]
+WantedBy=multi-user.target
