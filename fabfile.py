@@ -14,8 +14,6 @@ conf.set_fabric_env()
 env.root_directory = os.path.dirname(os.path.realpath(__file__))
 env.deploy_directory = os.path.join(env.root_directory, 'deploy')
 env.app_settings_file = os.path.join(env.deploy_directory, 'settings.json')
-env.ssh_directory = os.path.join(env.deploy_directory, 'ssh')
-env.fab_hosts_directory = os.path.join(env.deploy_directory, 'fab_hosts')
 
 
 def connect_to_ec2():
@@ -34,8 +32,6 @@ def create_instance(name, tag=None):
     tag        A name that will be used to tag the instance so we can
                easily find it later.
     """
-    prep_path(env.ssh_directory)
-    prep_path(env.fab_hosts_directory)
 
 
     print("Started creating {}...".format(name))
@@ -61,20 +57,6 @@ def create_instance(name, tag=None):
 
     print("Instance state: %s" % instance.state)
     print("Public dns: %s" % instance.public_dns_name)
-
-    host_data = {
-        'host_string': instance.ip_address,
-        'port': env.aws_ssh_port,
-        'user': env.aws_linux_user_name,
-        'key_filename': env.aws_ssh_key_path,
-    }
-    with open(os.path.join(env.ssh_directory, ''.join([name, '.json'])), 'w') as f:
-        json.dump(host_data, f)
-
-    with open("deploy/fab_hosts/{}.txt".format(name), "w") as f:
-        f.write(instance.public_dns_name)
-        f.close()
-
     return instance.public_dns_name
 
 
@@ -99,17 +81,12 @@ def terminate_instance(name):
             if raw_input("terminate? (y/n) ").lower() == "y":
                 print("Terminating {}".format(instance.id))
                 conn.terminate_instances(instance_ids=[instance.id])
-                os.remove(os.path.join(env.ssh_directory, ''.join([name, '.json'])))  # noqa
                 print("Terminated")
 
 
 @task
 def install_solr(name):
-    """SSH into an instance."""
-    with open(os.path.join(env.ssh_directory, ''.join([name, '.json'])), 'r') as f:  # noqa
-        host_data = json.load(f)
-    with open("deploy/fab_hosts/{}.txt".format(name)) as f:
-        env.host_string = "{}@{}".format(env.aws_linux_user_name, f.readline().strip())
+    host_data = get_server_host_data_by_nametag(name)
     with settings(**host_data):
         sudo('yum -y install wget')  # To download solr packages
         sudo('yum -y install java-1.8.0-openjdk-devel.x86_64')  # Latest java
@@ -124,17 +101,21 @@ def install_solr(name):
         # deploy systemd solr startup script
         with cd('/etc/systemd/system/'):
             put('solr.service', 'solr.service', use_sudo=True)
+            sudo('systemctl enable solr')
             sudo('systemctl start solr')
 
 
 #  ----------HELPER FUNCTIONS-----------
 
 
-def prep_path(directory):
-    try:
-        os.makedirs(directory)
-    except OSError as exception:
-        if exception.errno == errno.EEXIST and os.path.isdir(directory):
-            pass
-        else:
-            raise
+def get_server_host_data_by_nametag(nametag):
+    conn = connect_to_ec2()
+    filters = {"tag:Name": nametag}
+    for reservation in conn.get_all_instances(filters=filters):
+        for instance in reservation.instances:
+            host_data = {
+            'host_string': instance.ip_address,
+            'port': env.aws_ssh_port,
+            'user': env.aws_linux_user_name,
+            'key_filename': env.aws_ssh_key_path }
+            return host_data
