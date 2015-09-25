@@ -7,15 +7,8 @@ import boto.ec2
 import time
 import conf
 
-# -----SETTINGS-----------
 
-
-for name, value in conf.deploy_settings.items():
-    env_value = os.getenv(name.upper())
-    env_value = value
-    env[name] = env_value
-    if not env_value:
-        raise Exception("Please make sure to enter your AWS keys/info in your deploy/environment file before running fab scripts. {} is current set to {}".format(name, value))
+conf.set_fabric_env()
 
 # Define non-configurable settings.
 env.root_directory = os.path.dirname(os.path.realpath(__file__))
@@ -78,9 +71,10 @@ def create_instance(name, tag=None):
     with open(os.path.join(env.ssh_directory, ''.join([name, '.json'])), 'w') as f:
         json.dump(host_data, f)
 
-    f = open("deploy/fab_hosts/{}.txt".format(name), "w")
-    f.write(instance.public_dns_name)
-    f.close()
+    with open("deploy/fab_hosts/{}.txt".format(name), "w") as f:
+        f.write(instance.public_dns_name)
+        f.close()
+
     return instance.public_dns_name
 
 
@@ -114,8 +108,8 @@ def install_solr(name):
     """SSH into an instance."""
     with open(os.path.join(env.ssh_directory, ''.join([name, '.json'])), 'r') as f:  # noqa
         host_data = json.load(f)
-    f = open("deploy/fab_hosts/{}.txt".format(name))
-    env.host_string = "{}@{}".format(env.aws_linux_user_name, f.readline().strip())
+    with open("deploy/fab_hosts/{}.txt".format(name)) as f:
+        env.host_string = "{}@{}".format(env.aws_linux_user_name, f.readline().strip())
     with settings(**host_data):
         sudo('yum -y install wget')
         sudo('yum -y install java-1.8.0-openjdk-devel.x86_64')
