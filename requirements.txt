@@ -1,0 +1,11 @@
+create conf.py file that sets following fabric env parameters:
+    'aws_access_key_id': 'your-key-id',
+    'aws_secret_access_key': 'your-access-key',
+    'aws_default_region': 'eu-central-1',
+    'aws_security_group_name': 'solr-sg',
+    'aws_instance_type': 't2.micro',
+    'aws_ami_id': 'ami-dafdcfc7',
+    'aws_ssh_key_name': 'your-key-name',
+    'aws_ssh_key_path': 'your-key-path',
+    'aws_ssh_port': 22,
+    'aws_linux_user_name': 'ec2-user'
