@@ -1,7 +1,7 @@
 import errno
 import os
 import json
-from fabric.api import env, sudo, run, task, settings
+from fabric.api import env, sudo, put, task, settings, cd
 import boto
 import boto.ec2
 import time
@@ -111,13 +111,20 @@ def install_solr(name):
     with open("deploy/fab_hosts/{}.txt".format(name)) as f:
         env.host_string = "{}@{}".format(env.aws_linux_user_name, f.readline().strip())
     with settings(**host_data):
-        sudo('yum -y install wget')
-        sudo('yum -y install java-1.8.0-openjdk-devel.x86_64')
-        sudo('yum -y install lsof.x86_64')
-        run('wget apache.spd.co.il/lucene/solr/5.3.0/solr-5.3.0.tgz')
-        run('tar zxf solr-5.3.0.tgz')
-        run('rm solr-5.3.0.tgz')
-        run('solr-5.3.0/bin/solr start -p 8983')
+        sudo('yum -y install wget')  # To download solr packages
+        sudo('yum -y install java-1.8.0-openjdk-devel.x86_64')  # Latest java
+        sudo('yum -y install lsof.x86_64')  # Requirement by solr to check if already running
+
+        # download and unpack solr
+        with cd('/etc/'):
+            sudo('wget apache.spd.co.il/lucene/solr/5.3.0/solr-5.3.0.tgz')
+            sudo('tar zxf solr-5.3.0.tgz')
+            sudo('rm solr-5.3.0.tgz')
+
+        # deploy systemd solr startup script
+        with cd('/etc/systemd/system/'):
+            put('solr.service', 'solr.service', use_sudo=True)
+            sudo('systemctl start solr')
 
 
 #  ----------HELPER FUNCTIONS-----------
