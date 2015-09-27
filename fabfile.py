@@ -3,24 +3,13 @@ from fabric.api import env, sudo, put, task, cd
 from fabric.operations import prompt
 import boto
 import boto.ec2
+import boto.logs
 import time
 import conf
-
+from datetime import datetime
+import json
 
 conf.set_fabric_env()
-
-# Define non-configurable settings.
-env.root_directory = os.path.dirname(os.path.realpath(__file__))
-env.deploy_directory = os.path.join(env.root_directory, 'deploy')
-env.app_settings_file = os.path.join(env.deploy_directory, 'settings.json')
-
-
-def connect_to_ec2():
-    conn = boto.ec2.connect_to_region(env.aws_default_region,
-                                      aws_access_key_id=env.aws_access_key_id,
-                                      aws_secret_access_key=env.aws_secret_access_key)
-    return conn
-
 
 @task
 def create_instance(name, tag=None):
@@ -31,10 +20,7 @@ def create_instance(name, tag=None):
     tag        A name that will be used to tag the instance so we can
                easily find it later.
     """
-
-
     print("Started creating {}...".format(name))
-    print("...Creating EC2 instance...")
 
     conn = connect_to_ec2()
 
@@ -51,7 +37,7 @@ def create_instance(name, tag=None):
         instance.add_tag(tag)
     while instance.state != 'running':
         print("Instance state: %s" % instance.state)
-        time.sleep(15)
+        time.sleep(5)
         instance.update()
 
     print("Instance state: %s" % instance.state)
@@ -85,6 +71,9 @@ def terminate_instance(name):
 
 @task
 def install_solr(name):
+    """
+    Install SOLR on a machine
+    """
 
     set_host_by_name_tag(name)
 
@@ -105,6 +94,63 @@ def install_solr(name):
         sudo('systemctl start solr')
 
 
+@task
+def ec2_cleanup():
+    """
+    Shutting-down all instances which correspond to following conditions:
+    1. not tagged with the "dont-touch" tag
+    2. older than 1 week
+    3. not spot instances
+    """
+    print("Started cleanup...")
+
+    for region_name in env.aws_active_regions:
+        # create CloudWatch log stream
+        log_writer = create_cloudwatch_logstream(
+            region_name=region_name,
+            log_stream_name='ec2_cleanup')
+
+        conn = connect_to_ec2(region_name)
+        for reservation in conn.get_all_instances():
+            for instance in reservation.instances:
+                # validating conditions for instance termination
+                is_spot_instance = instance.spot_instance_request_id is not None
+                is_not_running = instance.state != 'running'
+                is_dont_touch_tag = 'dont-touch' in instance.tags
+                if is_spot_instance or is_not_running or is_dont_touch_tag:
+                    continue
+
+                # checking uptime and terminating instances
+                instance_launch_time = datetime.strptime(instance.launch_time, '%Y-%m-%dT%H:%M:%S.000Z')
+                instance_uptime_days = (datetime.utcnow() - instance_launch_time).days
+                if env.aws_instance_uptime_days_limit < instance_uptime_days:
+                    # stopping instance
+                    conn.stop_instances(instance_ids=[instance.id])
+                    while instance.state != 'stopped':
+                        time.sleep(3)
+                        instance.update()
+
+                    # detaching and deleting all EBS volumes
+                    attached_volumes = conn.get_all_volumes(filters={'attachment.instance-id': instance.id})
+                    for volume in attached_volumes:
+                        volume.detach()
+                        while volume.status != 'available':
+                            time.sleep(3)
+                            volume.update()
+                        volume.delete()
+
+                    # terminating instance
+                    conn.terminate_instances(instance_ids=[instance.id])
+
+                    # writing to CloudWatch log
+                    print "terminated instance {}.".format(instance.id)
+                    log_writer = write_cloudwatch_logstream(
+                        region_name=region_name,
+                        log_stream_name=log_writer['log_stream_name'],
+                        message='terminating instance {}'.format(instance.id),
+                        log_stream_token=log_writer['sequence_token'])
+
+
 #  ----------HELPER FUNCTIONS-----------
 
 
@@ -117,3 +163,41 @@ def set_host_by_name_tag(nametag):
             env.port = env.aws_ssh_port
             env.user = env.aws_linux_user_name
             env.key_filename = env.aws_ssh_key_path
+
+
+def get_epoch_timestamp():
+    return (datetime.utcnow() - datetime(1970, 1, 1)).total_seconds() * 1000
+
+
+def create_cloudwatch_logstream(region_name, log_stream_name):
+        logs = boto.logs.connect_to_region(region_name)
+        log_stream_name = "{}_{}_utc".format(log_stream_name, datetime.utcnow().strftime('%Y-%m-%d_%H-%M-%S'))
+        logs.create_log_stream(log_group_name=env.aws_logs_group_name,
+                               log_stream_name=log_stream_name)
+
+        logstream_res = logs.put_log_events(
+                               log_group_name=env.aws_logs_group_name,
+                               log_stream_name=log_stream_name,
+                               log_events=[{'timestamp': get_epoch_timestamp(),
+                                            'message': 'created logstream {}'.format(log_stream_name)}])
+        return {'log_stream_name': log_stream_name,
+                'sequence_token': logstream_res['nextSequenceToken']}
+
+
+def write_cloudwatch_logstream(region_name, log_stream_name, message, log_stream_token):
+        logs = boto.logs.connect_to_region(region_name)
+        logstream_res = logs.put_log_events(
+                               log_group_name=env.aws_logs_group_name,
+                               log_stream_name=log_stream_name,
+                               log_events=[{'timestamp': get_epoch_timestamp(),
+                                            'message': message}],
+                               sequence_token=log_stream_token)
+        return {'log_stream_name': log_stream_name,
+                'sequence_token': logstream_res['nextSequenceToken']}
+
+
+def connect_to_ec2(aws_region_name=env.aws_default_region):
+    conn = boto.ec2.connect_to_region(aws_region_name,
+                                      aws_access_key_id=env.aws_access_key_id,
+                                      aws_secret_access_key=env.aws_secret_access_key)
+    return conn
