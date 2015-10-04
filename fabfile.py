@@ -35,8 +35,7 @@ def create_instance(name, tag=None):
     if tag:
         instance.add_tag(tag)
     while instance.state != 'running':
-        print("Instance state: %s" % instance.state)
-        time.sleep(5)
+        time.sleep(2)
         instance.update()
 
     print("Instance state: %s" % instance.state)
@@ -112,26 +111,16 @@ def ec2_cleanup():
         conn = connect_to_ec2(region_name)
 
         instances_to_cleanup = find_instances_to_cleanup(conn)
+        if not instances_to_cleanup:
+            print 'No instances to clean'
+            return
         instances_ids_to_cleanup = [x.id for x in instances_to_cleanup]
 
         # stopping all instances
         conn.stop_instances(instance_ids=instances_ids_to_cleanup)
 
-        # deleting ebs volumes
         for instance in instances_to_cleanup:
-            # waiting for instance to stop before can detach and delete volume
-            while instance.state != 'stopped':
-                time.sleep(3)
-                instance.update()
-
-            # detaching and deleting all instance EBS volumes
-            attached_volumes = conn.get_all_volumes(filters={'attachment.instance-id': instance.id})
-            for volume in attached_volumes:
-                volume.detach()
-                while volume.status != 'available':
-                    time.sleep(2)
-                    volume.update()
-                volume.delete()
+            delete_instance_volumes(conn, instance)
 
             # writing to CloudWatch log
             print "terminating instance {}.".format(instance.id)
@@ -215,3 +204,19 @@ def find_instances_to_cleanup(ec2_connection):
                 # adding instance to cleanup list
                 instances_to_cleanup.append(instance)
     return instances_to_cleanup
+
+
+def delete_instance_volumes(ec2_connection, instance):
+    # waiting for instance to stop before can detach and delete volume
+    while instance.state != 'stopped':
+        time.sleep(3)
+        instance.update()
+
+    # detaching and deleting all instance EBS volumes
+    attached_volumes = ec2_connection.get_all_volumes(filters={'attachment.instance-id': instance.id})
+    for volume in attached_volumes:
+        volume.detach()
+        while volume.status != 'available':
+            time.sleep(1)
+            volume.update()
+        volume.delete()
