@@ -7,7 +7,6 @@ import boto.logs
 import time
 import conf
 from datetime import datetime
-import json
 
 conf.set_fabric_env()
 
@@ -111,44 +110,39 @@ def ec2_cleanup():
             log_stream_name='ec2_cleanup')
 
         conn = connect_to_ec2(region_name)
-        for reservation in conn.get_all_instances():
-            for instance in reservation.instances:
-                # validating conditions for instance termination
-                is_spot_instance = instance.spot_instance_request_id is not None
-                is_not_running = instance.state != 'running'
-                is_dont_touch_tag = 'dont-touch' in instance.tags
-                if is_spot_instance or is_not_running or is_dont_touch_tag:
-                    continue
 
-                # checking uptime and terminating instances
-                instance_launch_time = datetime.strptime(instance.launch_time, '%Y-%m-%dT%H:%M:%S.000Z')
-                instance_uptime_days = (datetime.utcnow() - instance_launch_time).days
-                if env.aws_instance_uptime_days_limit < instance_uptime_days:
-                    # stopping instance
-                    conn.stop_instances(instance_ids=[instance.id])
-                    while instance.state != 'stopped':
-                        time.sleep(3)
-                        instance.update()
+        instances_to_cleanup = find_instances_to_cleanup(conn)
+        instances_ids_to_cleanup = [x.id for x in instances_to_cleanup]
 
-                    # detaching and deleting all EBS volumes
-                    attached_volumes = conn.get_all_volumes(filters={'attachment.instance-id': instance.id})
-                    for volume in attached_volumes:
-                        volume.detach()
-                        while volume.status != 'available':
-                            time.sleep(3)
-                            volume.update()
-                        volume.delete()
+        # stopping all instances
+        conn.stop_instances(instance_ids=instances_ids_to_cleanup)
 
-                    # terminating instance
-                    conn.terminate_instances(instance_ids=[instance.id])
+        # deleting ebs volumes
+        for instance in instances_to_cleanup:
+            # waiting for instance to stop before can detach and delete volume
+            while instance.state != 'stopped':
+                time.sleep(3)
+                instance.update()
 
-                    # writing to CloudWatch log
-                    print "terminated instance {}.".format(instance.id)
-                    log_writer = write_cloudwatch_logstream(
-                        region_name=region_name,
-                        log_stream_name=log_writer['log_stream_name'],
-                        message='terminating instance {}'.format(instance.id),
-                        log_stream_token=log_writer['sequence_token'])
+            # detaching and deleting all instance EBS volumes
+            attached_volumes = conn.get_all_volumes(filters={'attachment.instance-id': instance.id})
+            for volume in attached_volumes:
+                volume.detach()
+                while volume.status != 'available':
+                    time.sleep(2)
+                    volume.update()
+                volume.delete()
+
+            # writing to CloudWatch log
+            print "terminating instance {}.".format(instance.id)
+            log_writer = write_cloudwatch_logstream(
+                region_name=region_name,
+                log_stream_name=log_writer['log_stream_name'],
+                message='terminating instance {}'.format(instance.id),
+                log_stream_token=log_writer['sequence_token'])
+
+        # terminating all instance
+        conn.terminate_instances(instance_ids=instances_ids_to_cleanup)
 
 
 #  ----------HELPER FUNCTIONS-----------
@@ -201,3 +195,23 @@ def connect_to_ec2(aws_region_name=env.aws_default_region):
                                       aws_access_key_id=env.aws_access_key_id,
                                       aws_secret_access_key=env.aws_secret_access_key)
     return conn
+
+
+def find_instances_to_cleanup(ec2_connection):
+    instances_to_cleanup = []
+    for reservation in ec2_connection.get_all_instances():
+        for instance in reservation.instances:
+            # validating conditions for instance termination
+            is_spot_instance = instance.spot_instance_request_id is not None
+            is_not_running = instance.state != 'running'
+            is_dont_touch_tag = 'dont-touch' in instance.tags
+            if is_spot_instance or is_not_running or is_dont_touch_tag:
+                continue
+
+            # checking uptime and terminating instances
+            instance_launch_time = datetime.strptime(instance.launch_time, '%Y-%m-%dT%H:%M:%S.000Z')
+            instance_uptime_days = (datetime.utcnow() - instance_launch_time).days
+            if env.aws_instance_uptime_days_limit < instance_uptime_days:
+                # adding instance to cleanup list
+                instances_to_cleanup.append(instance)
+    return instances_to_cleanup
