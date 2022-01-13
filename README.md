@@ -6,5 +6,6 @@ This fabfile has following tasks:
 2. Terminate instance: __fab terminate_instance:*instance-name*__
 3. install solr on existing instance: __fab install_solr:*instance-name*__
 4. clear machined with uptime more than 1 week: __fab ec2_cleanup__
+5. Thans it
 
 
